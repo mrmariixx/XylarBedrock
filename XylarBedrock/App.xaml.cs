@@ -6,7 +6,7 @@ namespace XylarBedrock
 {
     public partial class App : Application
     {
-        public static string Version => "0.0.0.2";
+        public static string Version => "0.0.0.3";
         public static string DisplayName => $"XylarBedrock v{Version}";
         public static string StartupNotice =>
             "IF U SEE THIS MESSAGE, IT MEANS THAT THIS APP IS MADE BY Xylar Inc. and Mrmariix." +

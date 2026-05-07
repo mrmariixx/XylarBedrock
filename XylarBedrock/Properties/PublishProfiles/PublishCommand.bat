@@ -7,7 +7,7 @@ pushd "%PROJECT_DIR%"
 set "PUBLISH_DIR=bin\Publish\net8.0-windows10.0.17763.0\win-x86\publish"
 set "STAGE_DIR=obj\release-stage\XylarBedrock"
 set "ZIP_DIR=releases"
-set "ZIP_NAME=XylarBedrock-v0.0.0.2-win-x86.zip"
+set "ZIP_NAME=XylarBedrock-v0.0.0.3-win-x86.zip"
 
 dotnet publish ".\XylarBedrock.csproj" ^
 --configuration Publish ^
