@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Threading.Tasks;
+using System.Diagnostics;
 using XylarBedrock.Classes;
 using System.Windows;
 using System.Windows.Input;
@@ -127,22 +128,34 @@ namespace XylarBedrock.ViewModels
         {
             if (p == null)
             {
-                MessageBox.Show(
-                    "No launcher profile is selected right now. Reopen XylarBedrock once, then try Play again.",
-                    App.DisplayName,
-                    MessageBoxButton.OK,
-                    MessageBoxImage.Warning);
-                return;
+                LoadConfig();
+                p = Config?.CurrentProfile;
+                i ??= Config?.CurrentInstallation;
+
+                if (p == null)
+                {
+                    MessageBox.Show(
+                        "No launcher profile is selected right now. Reopen XylarBedrock once, then try Play again.",
+                        App.DisplayName,
+                        MessageBoxButton.OK,
+                        MessageBoxImage.Warning);
+                    return;
+                }
             }
 
             if (i == null)
             {
-                MessageBox.Show(
-                    "No valid Minecraft installation is selected right now. Reopen XylarBedrock once, then try Play again.",
-                    App.DisplayName,
-                    MessageBoxButton.OK,
-                    MessageBoxImage.Warning);
-                return;
+                i = await TryRecoverPlayableInstallationAsync();
+
+                if (i == null)
+                {
+                    MessageBox.Show(
+                        "No valid Minecraft installation is selected right now. Reopen XylarBedrock once, then try Play again.",
+                        App.DisplayName,
+                        MessageBoxButton.OK,
+                        MessageBoxImage.Warning);
+                    return;
+                }
             }
 
             i.LastPlayed = DateTime.Now;
@@ -157,12 +170,28 @@ namespace XylarBedrock.ViewModels
             MCVersion version = ResolvePlayableVersion(i);
             if (version == null)
             {
-                MessageBox.Show(
-                    "The selected Minecraft version is not available right now. Refresh the launcher once or choose another version.",
-                    App.DisplayName,
-                    MessageBoxButton.OK,
-                    MessageBoxImage.Warning);
-                return;
+                await LoadVersions(forceStoreCheck: true);
+                version = ResolvePlayableVersion(i);
+
+                if (version == null)
+                {
+                    BLInstallation recoveredInstallation = await TryRecoverPlayableInstallationAsync();
+                    if (recoveredInstallation != null)
+                    {
+                        i = recoveredInstallation;
+                        version = ResolvePlayableVersion(i);
+                    }
+                }
+
+                if (version == null)
+                {
+                    MessageBox.Show(
+                        "The selected Minecraft version is not available right now. Refresh the launcher once or choose another version.",
+                        App.DisplayName,
+                        MessageBoxButton.OK,
+                        MessageBoxImage.Warning);
+                    return;
+                }
             }
 
             string path = FilePaths.GetInstallationPackageDataPath(p.UUID, i.DirectoryName_Full);
@@ -173,6 +202,45 @@ namespace XylarBedrock.ViewModels
             }
 
             await PackageManager.LaunchPackage(version, path, KeepLauncherOpen, LaunchEditor);
+        }
+
+        private async Task<BLInstallation> TryRecoverPlayableInstallationAsync()
+        {
+            try
+            {
+                if (Config?.CurrentProfile == null || Config?.CurrentInstallations == null || Config.CurrentInstallations.Count == 0)
+                {
+                    LoadConfig();
+                }
+
+                if (!PackageManager.IsOfficialStoreReleaseInstalled())
+                {
+                    return Config?.CurrentInstallation;
+                }
+
+                await LoadVersions(forceStoreCheck: true);
+
+                MCVersion storeVersion = Versions.FirstOrDefault(version =>
+                    !version.IsCustom &&
+                    version.MatchesOfficialStoreRelease);
+
+                storeVersion ??= PackageManager.VersionDownloader.GetVersion(
+                    VersioningMode.LatestRelease,
+                    Constants.LATEST_RELEASE_UUID);
+
+                if (storeVersion == null)
+                {
+                    Config?.Validate();
+                    return Config?.CurrentInstallation;
+                }
+
+                return Config?.SelectInstallationForVersion(storeVersion);
+            }
+            catch (Exception ex)
+            {
+                Trace.WriteLine($"Could not recover a playable Minecraft installation: {ex}");
+                return Config?.CurrentInstallation;
+            }
         }
 
         public async Task<bool> Install(
