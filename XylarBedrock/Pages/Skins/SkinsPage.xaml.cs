@@ -1,4 +1,5 @@
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.ComponentModel;
@@ -6,10 +7,12 @@ using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Reflection;
+using System.Resources;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
+using System.Windows.Resources;
 using XylarBedrock.Localization.Language;
 
 namespace XylarBedrock.Pages.Skins
@@ -94,8 +97,13 @@ namespace XylarBedrock.Pages.Skins
                 string skinsDirectory = Path.Combine(downloadsDirectory, "XylarBedrock Skins");
                 Directory.CreateDirectory(skinsDirectory);
 
-                string destinationPath = GetUniqueDownloadPath(Path.Combine(skinsDirectory, Path.GetFileName(selectedSkin.FilePath)));
-                File.Copy(selectedSkin.FilePath, destinationPath);
+                string destinationPath = GetUniqueDownloadPath(Path.Combine(skinsDirectory, selectedSkin.FileName));
+                using (Stream sourceStream = selectedSkin.OpenRead())
+                using (FileStream destinationStream = File.Create(destinationPath))
+                {
+                    sourceStream.CopyTo(destinationStream);
+                }
+
                 DownloadStatusText.Text = T("SkinsPage_DownloadedStatus", "Downloaded to Downloads\\XylarBedrock Skins.");
             }
             catch
@@ -107,6 +115,17 @@ namespace XylarBedrock.Pages.Skins
         private void LoadSkins()
         {
             allSkins.Clear();
+
+            foreach (string resourcePath in GetEmbeddedSkinResourcePaths())
+            {
+                string fileName = GetResourceFileName(resourcePath);
+                if (ShouldSkipSkinFile(fileName) || allSkins.Any(skin => string.Equals(skin.FileName, fileName, StringComparison.OrdinalIgnoreCase)))
+                {
+                    continue;
+                }
+
+                allSkins.Add(SkinEntry.FromResource(resourcePath));
+            }
 
             foreach (string directory in GetSkinDirectories())
             {
@@ -123,12 +142,13 @@ namespace XylarBedrock.Pages.Skins
                 foreach (string skinFile in skinFiles)
                 {
                     string resolvedSkinFile = Path.GetFullPath(skinFile);
-                    if (allSkins.Any(skin => string.Equals(skin.FilePath, resolvedSkinFile, StringComparison.OrdinalIgnoreCase)))
+                    string fileName = Path.GetFileName(resolvedSkinFile);
+                    if (allSkins.Any(skin => string.Equals(skin.FileName, fileName, StringComparison.OrdinalIgnoreCase)))
                     {
                         continue;
                     }
 
-                    allSkins.Add(new SkinEntry(resolvedSkinFile));
+                    allSkins.Add(SkinEntry.FromFile(resolvedSkinFile));
                 }
             }
         }
@@ -316,19 +336,79 @@ namespace XylarBedrock.Pages.Skins
                    extension.Equals(".webp", StringComparison.OrdinalIgnoreCase);
         }
 
+        private static bool ShouldSkipSkinFile(string path)
+        {
+            return !IsSupportedSkinImage(path) ||
+                   Path.GetFileName(path).IndexOf("cape", StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
+        private static IEnumerable<string> GetEmbeddedSkinResourcePaths()
+        {
+            List<string> resourcePaths = new List<string>();
+
+            try
+            {
+                Assembly assembly = Assembly.GetExecutingAssembly();
+                string resourceName = $"{assembly.GetName().Name}.g.resources";
+                using (Stream stream = assembly.GetManifestResourceStream(resourceName))
+                {
+                    if (stream == null)
+                    {
+                        return resourcePaths;
+                    }
+
+                    using (ResourceReader reader = new ResourceReader(stream))
+                    {
+                        foreach (DictionaryEntry entry in reader)
+                        {
+                            string resourcePath = entry.Key as string;
+                            if (string.IsNullOrWhiteSpace(resourcePath) ||
+                                !resourcePath.StartsWith("resources/skins/", StringComparison.OrdinalIgnoreCase) ||
+                                ShouldSkipSkinFile(resourcePath))
+                            {
+                                continue;
+                            }
+
+                            resourcePaths.Add(resourcePath);
+                        }
+                    }
+                }
+            }
+            catch
+            {
+                // If WPF resource enumeration fails, the file-system fallback below still works in development builds.
+            }
+
+            return resourcePaths.OrderBy(GetResourceFileName, StringComparer.OrdinalIgnoreCase);
+        }
+
+        private static string GetResourceFileName(string resourcePath)
+        {
+            string fileName = resourcePath?.Split(new[] { '/', '\\' }, StringSplitOptions.RemoveEmptyEntries).LastOrDefault() ?? "skin.png";
+            return Uri.UnescapeDataString(fileName);
+        }
+
         public class SkinEntry : INotifyPropertyChanged
         {
             private bool isSelected;
             private ImageSource previewImage;
+            private readonly Func<Stream> openStream;
 
-            public SkinEntry(string filePath)
+            private SkinEntry(string fileName, string filePath, string resourcePath, Func<Stream> openStream)
             {
+                FileName = fileName;
                 FilePath = filePath;
+                ResourcePath = resourcePath;
+                this.openStream = openStream;
             }
 
             public event PropertyChangedEventHandler PropertyChanged;
 
+            public string FileName { get; }
+
             public string FilePath { get; }
+
+            public string ResourcePath { get; }
 
             public ImageSource PreviewImage
             {
@@ -355,6 +435,32 @@ namespace XylarBedrock.Pages.Skins
                 }
             }
 
+            public static SkinEntry FromFile(string filePath)
+            {
+                string resolvedPath = Path.GetFullPath(filePath);
+                return new SkinEntry(Path.GetFileName(resolvedPath), resolvedPath, null, () => File.OpenRead(resolvedPath));
+            }
+
+            public static SkinEntry FromResource(string resourcePath)
+            {
+                string normalizedPath = resourcePath.Replace('\\', '/');
+                return new SkinEntry(GetResourceFileName(normalizedPath), null, normalizedPath, () =>
+                {
+                    StreamResourceInfo resourceInfo = Application.GetResourceStream(new Uri(normalizedPath, UriKind.Relative));
+                    if (resourceInfo?.Stream == null)
+                    {
+                        throw new FileNotFoundException("Embedded skin resource was not found.", normalizedPath);
+                    }
+
+                    return resourceInfo.Stream;
+                });
+            }
+
+            public Stream OpenRead()
+            {
+                return openStream();
+            }
+
             public void EnsurePreview()
             {
                 if (PreviewImage != null)
@@ -362,7 +468,7 @@ namespace XylarBedrock.Pages.Skins
                     return;
                 }
 
-                PreviewImage = SkinPreviewRenderer.CreatePreview(FilePath) ?? SkinPreviewRenderer.CreateFallbackPreview(FilePath);
+                PreviewImage = SkinPreviewRenderer.CreatePreview(this) ?? SkinPreviewRenderer.CreateFallbackPreview(this);
             }
         }
 
@@ -371,17 +477,11 @@ namespace XylarBedrock.Pages.Skins
             private const int PreviewWidth = 210;
             private const int PreviewHeight = 310;
 
-            public static ImageSource CreatePreview(string skinPath)
+            public static ImageSource CreatePreview(SkinEntry skinEntry)
             {
                 try
                 {
-                    BitmapImage skin = new BitmapImage();
-                    skin.BeginInit();
-                    skin.CacheOption = BitmapCacheOption.OnLoad;
-                    skin.CreateOptions = BitmapCreateOptions.IgnoreColorProfile;
-                    skin.UriSource = new Uri(skinPath, UriKind.Absolute);
-                    skin.EndInit();
-                    skin.Freeze();
+                    BitmapImage skin = LoadBitmap(skinEntry);
 
                     DrawingVisual visual = new DrawingVisual();
                     RenderOptions.SetBitmapScalingMode(visual, BitmapScalingMode.NearestNeighbor);
@@ -432,23 +532,35 @@ namespace XylarBedrock.Pages.Skins
                 DrawImage(dc, Crop(skin, source.X, source.Y, source.Width, source.Height), PixelSnap(destination), opacity);
             }
 
-            public static ImageSource CreateFallbackPreview(string skinPath)
+            public static ImageSource CreateFallbackPreview(SkinEntry skinEntry)
             {
                 try
+                {
+                    return LoadBitmap(skinEntry, 128);
+                }
+                catch
+                {
+                    return null;
+                }
+            }
+
+            private static BitmapImage LoadBitmap(SkinEntry skinEntry, int decodePixelWidth = 0)
+            {
+                using (Stream stream = skinEntry.OpenRead())
                 {
                     BitmapImage skin = new BitmapImage();
                     skin.BeginInit();
                     skin.CacheOption = BitmapCacheOption.OnLoad;
                     skin.CreateOptions = BitmapCreateOptions.IgnoreColorProfile;
-                    skin.DecodePixelWidth = 128;
-                    skin.UriSource = new Uri(skinPath, UriKind.Absolute);
+                    if (decodePixelWidth > 0)
+                    {
+                        skin.DecodePixelWidth = decodePixelWidth;
+                    }
+
+                    skin.StreamSource = stream;
                     skin.EndInit();
                     skin.Freeze();
                     return skin;
-                }
-                catch
-                {
-                    return null;
                 }
             }
 
