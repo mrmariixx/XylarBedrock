@@ -3,6 +3,7 @@ using System;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Runtime.InteropServices;
 using System.Windows.Forms;
 
 namespace XylarBedrock.Handlers
@@ -21,28 +22,41 @@ namespace XylarBedrock.Handlers
                 return;
             }
 
-            string installDirectory = GetInstallDirectory();
-            using RegistryKey uninstallKey = Registry.CurrentUser.CreateSubKey(UninstallRegistryKey, true);
-            if (uninstallKey == null)
+            string installDirectory = GetInstallDirectory(exePath);
+            TryEnsureUninstallRegistration(exePath, installDirectory);
+            EnsureDesktopShortcut(exePath, installDirectory);
+        }
+
+        private static void TryEnsureUninstallRegistration(string exePath, string installDirectory)
+        {
+            try
             {
-                return;
+                using RegistryKey uninstallKey = Registry.CurrentUser.CreateSubKey(UninstallRegistryKey, true);
+                if (uninstallKey == null)
+                {
+                    return;
+                }
+
+                uninstallKey.SetValue("DisplayName", App.DisplayName);
+                uninstallKey.SetValue("DisplayVersion", App.Version);
+                uninstallKey.SetValue("Publisher", "Xylar Inc. and Mrmariix");
+                uninstallKey.SetValue("InstallLocation", installDirectory);
+                uninstallKey.SetValue("DisplayIcon", exePath);
+                uninstallKey.SetValue("UninstallString", $"\"{exePath}\" --uninstall");
+                uninstallKey.SetValue("QuietUninstallString", $"\"{exePath}\" --uninstall");
+                uninstallKey.SetValue("NoModify", 1, RegistryValueKind.DWord);
+                uninstallKey.SetValue("NoRepair", 1, RegistryValueKind.DWord);
+                uninstallKey.SetValue("InstallDate", DateTime.Now.ToString("yyyyMMdd"));
+
+                int estimatedSizeKb = GetEstimatedSizeInKilobytes(installDirectory);
+                if (estimatedSizeKb > 0)
+                {
+                    uninstallKey.SetValue("EstimatedSize", estimatedSizeKb, RegistryValueKind.DWord);
+                }
             }
-
-            uninstallKey.SetValue("DisplayName", App.DisplayName);
-            uninstallKey.SetValue("DisplayVersion", App.Version);
-            uninstallKey.SetValue("Publisher", "Xylar Inc. and Mrmariix");
-            uninstallKey.SetValue("InstallLocation", installDirectory);
-            uninstallKey.SetValue("DisplayIcon", exePath);
-            uninstallKey.SetValue("UninstallString", $"\"{exePath}\" --uninstall");
-            uninstallKey.SetValue("QuietUninstallString", $"\"{exePath}\" --uninstall");
-            uninstallKey.SetValue("NoModify", 1, RegistryValueKind.DWord);
-            uninstallKey.SetValue("NoRepair", 1, RegistryValueKind.DWord);
-            uninstallKey.SetValue("InstallDate", DateTime.Now.ToString("yyyyMMdd"));
-
-            int estimatedSizeKb = GetEstimatedSizeInKilobytes(installDirectory);
-            if (estimatedSizeKb > 0)
+            catch (Exception ex)
             {
-                uninstallKey.SetValue("EstimatedSize", estimatedSizeKb, RegistryValueKind.DWord);
+                Trace.WriteLine($"Unable to register XylarBedrock in Apps & Features: {ex}");
             }
         }
 
@@ -104,6 +118,61 @@ namespace XylarBedrock.Handlers
         private static string GetInstallDirectory()
         {
             return AppContext.BaseDirectory.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        }
+
+        private static string GetInstallDirectory(string exePath)
+        {
+            string directory = Path.GetDirectoryName(exePath);
+            return string.IsNullOrWhiteSpace(directory)
+                ? GetInstallDirectory()
+                : directory.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        }
+
+        private static void EnsureDesktopShortcut(string exePath, string installDirectory)
+        {
+            string shortcutPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory), DesktopShortcutName);
+            object shell = null;
+            object shortcut = null;
+
+            try
+            {
+                Type shellType = Type.GetTypeFromProgID("WScript.Shell");
+                if (shellType == null)
+                {
+                    return;
+                }
+
+                shell = Activator.CreateInstance(shellType);
+                shortcut = shellType.InvokeMember(
+                    "CreateShortcut",
+                    System.Reflection.BindingFlags.InvokeMethod,
+                    null,
+                    shell,
+                    new object[] { shortcutPath });
+
+                Type shortcutType = shortcut.GetType();
+                shortcutType.InvokeMember("TargetPath", System.Reflection.BindingFlags.SetProperty, null, shortcut, new object[] { exePath });
+                shortcutType.InvokeMember("WorkingDirectory", System.Reflection.BindingFlags.SetProperty, null, shortcut, new object[] { installDirectory });
+                shortcutType.InvokeMember("IconLocation", System.Reflection.BindingFlags.SetProperty, null, shortcut, new object[] { exePath });
+                shortcutType.InvokeMember("Description", System.Reflection.BindingFlags.SetProperty, null, shortcut, new object[] { "XylarBedrock Launcher" });
+                shortcutType.InvokeMember("Save", System.Reflection.BindingFlags.InvokeMethod, null, shortcut, null);
+            }
+            catch (Exception ex)
+            {
+                Trace.WriteLine($"Unable to create desktop shortcut: {ex}");
+            }
+            finally
+            {
+                if (shortcut != null && Marshal.IsComObject(shortcut))
+                {
+                    Marshal.FinalReleaseComObject(shortcut);
+                }
+
+                if (shell != null && Marshal.IsComObject(shell))
+                {
+                    Marshal.FinalReleaseComObject(shell);
+                }
+            }
         }
 
         private static int GetEstimatedSizeInKilobytes(string installDirectory)
