@@ -11,19 +11,57 @@ using System.Reflection;
 using System.Resources;
 using System.Text;
 using System.Text.RegularExpressions;
+using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using System.Windows.Resources;
+using System.Windows.Threading;
+using Microsoft.Web.WebView2.Core;
 using XylarBedrock.Localization.Language;
 
 namespace XylarBedrock.Pages.Skins
 {
     public partial class SkinsPage : Page, INotifyPropertyChanged
     {
+        private const string FavesSkinPackName = "Fave's Skins";
+        private const string FavesSkinPackSerializeName = "xylarbedrock_faves_skins_v5";
+        private const string FavesSkinPackFolderName = "xylarbedrock_faves_skins_v5";
+        private const string OriginalSkinPackFileName = "Faves-Original-SkinPack.zip";
+        private const string OriginalSkinPackResourcePath = "Resources/skinpacks/faves_original_skinpack.zip";
+        private const string OriginalSkinPackSourcePath = @"C:\Users\MarioSyri\Downloads\560+ Stolen Skins (2).zip";
+        private const string TutorialVideoFileName = "faves_skinpack_tutorial.mp4";
+        private const string TutorialVideoResourcePath = "Resources/videos/faves_skinpack_tutorial.mp4";
+        private const string SkinMasterDownloadUrl = "https://cdn.discordapp.com/attachments/1505906948384489603/1505909282720452638/SkinMaster.exe?ex=6a1d7a4f&is=6a1c28cf&hm=440a38fc94d8c1a4329ccf3171984444d71f41bd77fa759550c9ecd192b887b1&";
+        private static readonly Guid FavesSkinPackHeaderUuid = new Guid("5b9c0143-55e5-46a8-9c98-d5043ddb15a5");
+        private static readonly Guid FavesSkinPackModuleUuid = new Guid("a16ee2a0-a50d-4a0f-a531-77d3d17ee718");
+        private static readonly string[] SkinResourceRoots =
+        {
+            "resources/persona/",
+            "resources/skins/"
+        };
+        private static readonly SkinRequiredRegion[] RequiredSkinRegions =
+        {
+            new SkinRequiredRegion("head", 8, 8, 8, 8, 0.35),
+            new SkinRequiredRegion("body", 20, 20, 8, 12, 0.35),
+            new SkinRequiredRegion("right arm", 44, 20, 4, 12, 0.25),
+            new SkinRequiredRegion("right leg", 4, 20, 4, 12, 0.25),
+            new SkinRequiredRegion("left arm", 36, 52, 4, 12, 0.25),
+            new SkinRequiredRegion("left leg", 20, 52, 4, 12, 0.25)
+        };
+        private const int PreviewSkinLimit = 96;
+        private const int PreviewWarmupBatchSize = 8;
+        private const int MaxSkinsPerMinecraftPack = 80;
+
         private readonly List<SkinEntry> allSkins = new List<SkinEntry>();
+        private readonly DispatcherTimer tutorialProgressTimer;
         private bool hasLoadedSkins;
+        private int previewWarmupToken;
+        private bool isTutorialPlaying;
+        private bool isTutorialSeeking;
+        private bool isUpdatingTutorialSlider;
 
         public event PropertyChangedEventHandler PropertyChanged;
 
@@ -33,6 +71,12 @@ namespace XylarBedrock.Pages.Skins
         {
             InitializeComponent();
             DataContext = this;
+
+            tutorialProgressTimer = new DispatcherTimer
+            {
+                Interval = TimeSpan.FromMilliseconds(250)
+            };
+            tutorialProgressTimer.Tick += TutorialProgressTimer_Tick;
         }
 
         private void Page_Loaded(object sender, RoutedEventArgs e)
@@ -57,22 +101,34 @@ namespace XylarBedrock.Pages.Skins
 
             try
             {
-                DownloadButton.IsEnabled = false;
                 DownloadStatusText.Text = T("SkinsPage_PreparingCollection", "Preparing Fave's Skins...");
 
                 string downloadsDirectory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads");
                 string skinsDirectory = Path.Combine(downloadsDirectory, "XylarBedrock Skins");
                 Directory.CreateDirectory(skinsDirectory);
 
-                string packFileName = "Faves-Skins.mcpack";
-                string destinationPath = GetUniqueDownloadPath(Path.Combine(skinsDirectory, packFileName));
-                int exportedCount = CreateMinecraftSkinPack(allSkins, destinationPath);
-                OpenDownloadedSkinPack(destinationPath);
+                int exportedCount;
+                IReadOnlyList<string> destinationPaths = CreateMinecraftSkinPacks(allSkins, skinsDirectory, out exportedCount);
+                List<string> installedPaths = new List<string>();
+                for (int i = 0; i < destinationPaths.Count; i++)
+                {
+                    string folderName = destinationPaths.Count == 1
+                        ? FavesSkinPackFolderName
+                        : $"{FavesSkinPackFolderName}_part{i + 1:00}";
+                    installedPaths.AddRange(InstallSkinPackIntoMinecraftFolders(destinationPaths[i], folderName));
+                }
 
-                DownloadStatusText.Text = string.Format(
-                    System.Globalization.CultureInfo.CurrentCulture,
-                    T("SkinsPage_CollectionDownloadedStatus", "Downloaded and opened Fave's Skins with {0} skins."),
-                    exportedCount);
+                if (destinationPaths.Count == 1)
+                {
+                    OpenDownloadedSkinPack(destinationPaths[0]);
+                }
+
+                DownloadStatusText.Text = installedPaths.Count == 0
+                    ? string.Format(
+                        System.Globalization.CultureInfo.CurrentCulture,
+                        T("SkinsPage_CollectionDownloadedStatus", "Downloaded Fave's Skins with {0} skins."),
+                        exportedCount)
+                    : $"Installed Fave's Skins with {exportedCount} skins across {destinationPaths.Count} packs. Restart Minecraft if it was already open.";
             }
             catch (Exception ex)
             {
@@ -81,7 +137,262 @@ namespace XylarBedrock.Pages.Skins
             }
             finally
             {
-                DownloadButton.IsEnabled = allSkins.Count > 0;
+            }
+        }
+
+        private void OriginalSkinPackButton_Click(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                string downloadsDirectory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads");
+                Directory.CreateDirectory(downloadsDirectory);
+
+                string destinationPath = GetUniqueDownloadPath(Path.Combine(downloadsDirectory, OriginalSkinPackFileName));
+                StreamResourceInfo resourceInfo = Application.GetResourceStream(new Uri(OriginalSkinPackResourcePath, UriKind.Relative)) ??
+                                                  Application.GetResourceStream(new Uri(OriginalSkinPackResourcePath.ToLowerInvariant(), UriKind.Relative));
+
+                if (resourceInfo?.Stream != null)
+                {
+                    using (resourceInfo.Stream)
+                    using (FileStream output = File.Create(destinationPath))
+                    {
+                        resourceInfo.Stream.CopyTo(output);
+                    }
+                }
+                else if (File.Exists(OriginalSkinPackSourcePath))
+                {
+                    File.Copy(OriginalSkinPackSourcePath, destinationPath, true);
+                }
+                else
+                {
+                    throw new FileNotFoundException("Original skin pack zip was not found.", OriginalSkinPackSourcePath);
+                }
+
+                DownloadStatusText.Text = $"Original skin pack saved to {destinationPath}";
+                ShowFileInExplorer(destinationPath);
+            }
+            catch (Exception ex)
+            {
+                Trace.WriteLine($"Original skin pack export failed: {ex}");
+                DownloadStatusText.Text = "Could not export the original skin pack.";
+            }
+        }
+
+        private async void TutorialButton_Click(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                TutorialOverlay.Visibility = Visibility.Visible;
+                isTutorialPlaying = true;
+                TutorialPlayPauseButton.Content = "PAUSE";
+                ResetTutorialProgress();
+
+                await TutorialPlayer.EnsureCoreWebView2Async();
+                TutorialPlayer.CoreWebView2.Settings.AreDefaultContextMenusEnabled = false;
+                TutorialPlayer.CoreWebView2.Settings.AreDevToolsEnabled = false;
+                TutorialPlayer.CoreWebView2.Navigate(new Uri(EnsureTutorialPlayerHtmlFile()).AbsoluteUri);
+                tutorialProgressTimer.Start();
+            }
+            catch (Exception ex)
+            {
+                Trace.WriteLine($"Could not open tutorial video: {ex}");
+                DownloadStatusText.Text = "Could not load the tutorial video inside XylarBedrock.";
+                TutorialOverlay.Visibility = Visibility.Collapsed;
+            }
+        }
+
+        private void CloseTutorialButton_Click(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                tutorialProgressTimer.Stop();
+                isTutorialPlaying = false;
+                TutorialPlayPauseButton.Content = "PLAY";
+                _ = ExecuteTutorialScriptAsync("window.xylarPause && window.xylarPause();");
+                if (TutorialPlayer.CoreWebView2 != null)
+                {
+                    TutorialPlayer.CoreWebView2.NavigateToString("<!doctype html><html><body style='background:#000'></body></html>");
+                }
+                ResetTutorialProgress();
+            }
+            catch (Exception ex)
+            {
+                Trace.WriteLine($"Could not stop tutorial video cleanly: {ex}");
+            }
+
+            TutorialOverlay.Visibility = Visibility.Collapsed;
+        }
+
+        private async void TutorialPlayer_NavigationCompleted(object sender, CoreWebView2NavigationCompletedEventArgs e)
+        {
+            if (!e.IsSuccess)
+            {
+                DownloadStatusText.Text = "Could not load the local tutorial player.";
+                return;
+            }
+
+            await ExecuteTutorialScriptAsync("window.xylarPlay && window.xylarPlay();");
+            isTutorialPlaying = true;
+            TutorialPlayPauseButton.Content = "PAUSE";
+            tutorialProgressTimer.Start();
+            await UpdateTutorialProgressAsync();
+        }
+
+        private async void TutorialBackButton_Click(object sender, RoutedEventArgs e)
+        {
+            await ExecuteTutorialScriptAsync("window.xylarSeekBy && window.xylarSeekBy(-10);");
+            await UpdateTutorialProgressAsync();
+        }
+
+        private async void TutorialForwardButton_Click(object sender, RoutedEventArgs e)
+        {
+            await ExecuteTutorialScriptAsync("window.xylarSeekBy && window.xylarSeekBy(10);");
+            await UpdateTutorialProgressAsync();
+        }
+
+        private async void TutorialPlayPauseButton_Click(object sender, RoutedEventArgs e)
+        {
+            string result = await ExecuteTutorialScriptAsync("window.xylarToggle ? window.xylarToggle() : false;");
+            isTutorialPlaying = result?.IndexOf("true", StringComparison.OrdinalIgnoreCase) >= 0;
+            TutorialPlayPauseButton.Content = isTutorialPlaying ? "PAUSE" : "PLAY";
+            if (isTutorialPlaying)
+            {
+                tutorialProgressTimer.Start();
+            }
+
+            await UpdateTutorialProgressAsync();
+        }
+
+        private void TutorialSeekSlider_PreviewMouseDown(object sender, MouseButtonEventArgs e)
+        {
+            isTutorialSeeking = true;
+        }
+
+        private async void TutorialSeekSlider_PreviewMouseUp(object sender, MouseButtonEventArgs e)
+        {
+            await SeekTutorialToSliderAsync();
+            isTutorialSeeking = false;
+        }
+
+        private async void TutorialSeekSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+        {
+            if (!isUpdatingTutorialSlider && isTutorialSeeking)
+            {
+                await SeekTutorialToSliderAsync();
+            }
+        }
+
+        private async void TutorialProgressTimer_Tick(object sender, EventArgs e)
+        {
+            await UpdateTutorialProgressAsync();
+        }
+
+        private async Task SeekTutorialToSliderAsync()
+        {
+            if (TutorialPlayer.CoreWebView2 == null)
+            {
+                return;
+            }
+
+            string seconds = TutorialSeekSlider.Value.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            await ExecuteTutorialScriptAsync($"window.xylarSeekTo && window.xylarSeekTo({seconds});");
+            await UpdateTutorialProgressAsync();
+        }
+
+        private async Task UpdateTutorialProgressAsync()
+        {
+            if (TutorialPlayer.CoreWebView2 == null)
+            {
+                ResetTutorialProgress();
+                return;
+            }
+
+            string result = await ExecuteTutorialScriptAsync("window.xylarState ? window.xylarState() : null;");
+            if (string.IsNullOrWhiteSpace(result) || result == "null")
+            {
+                ResetTutorialProgress();
+                return;
+            }
+
+            Newtonsoft.Json.Linq.JObject state;
+            try
+            {
+                state = Newtonsoft.Json.Linq.JObject.Parse(result);
+            }
+            catch
+            {
+                return;
+            }
+
+            double durationSeconds = state.Value<double?>("duration") ?? 0;
+            double positionSeconds = state.Value<double?>("position") ?? 0;
+            bool paused = state.Value<bool?>("paused") ?? true;
+
+            if (durationSeconds <= 0)
+            {
+                return;
+            }
+
+            isTutorialPlaying = !paused;
+            TutorialPlayPauseButton.Content = isTutorialPlaying ? "PAUSE" : "PLAY";
+
+            isUpdatingTutorialSlider = true;
+            TutorialSeekSlider.Maximum = Math.Max(1, durationSeconds);
+            if (!isTutorialSeeking)
+            {
+                TutorialSeekSlider.Value = Math.Min(TutorialSeekSlider.Maximum, Math.Max(0, positionSeconds));
+            }
+            isUpdatingTutorialSlider = false;
+
+            TutorialTimeText.Text = $"{FormatTutorialTime(TimeSpan.FromSeconds(positionSeconds))} / {FormatTutorialTime(TimeSpan.FromSeconds(durationSeconds))}";
+        }
+
+        private void ResetTutorialProgress()
+        {
+            isUpdatingTutorialSlider = true;
+            TutorialSeekSlider.Maximum = 1;
+            TutorialSeekSlider.Value = 0;
+            isUpdatingTutorialSlider = false;
+            TutorialTimeText.Text = "00:00 / 00:00";
+        }
+
+        private async Task<string> ExecuteTutorialScriptAsync(string script)
+        {
+            try
+            {
+                return TutorialPlayer.CoreWebView2 == null
+                    ? null
+                    : await TutorialPlayer.CoreWebView2.ExecuteScriptAsync(script);
+            }
+            catch (Exception ex)
+            {
+                Trace.WriteLine($"Tutorial script failed: {ex}");
+                return null;
+            }
+        }
+
+        private static string FormatTutorialTime(TimeSpan time)
+        {
+            return time.TotalHours >= 1
+                ? $"{(int)time.TotalHours:0}:{time.Minutes:00}:{time.Seconds:00}"
+                : $"{time.Minutes:00}:{time.Seconds:00}";
+        }
+
+        private void SkinMasterButton_Click(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                Process.Start(new ProcessStartInfo
+                {
+                    FileName = SkinMasterDownloadUrl,
+                    UseShellExecute = true
+                });
+                DownloadStatusText.Text = "SkinMaster download link opened. XylarBedrock will not run external EXE files automatically.";
+            }
+            catch (Exception ex)
+            {
+                Trace.WriteLine($"Could not open SkinMaster link: {ex}");
+                DownloadStatusText.Text = "Could not open the SkinMaster download link.";
             }
         }
 
@@ -97,7 +408,11 @@ namespace XylarBedrock.Pages.Skins
                     continue;
                 }
 
-                allSkins.Add(SkinEntry.FromResource(resourcePath));
+                SkinEntry skin = SkinEntry.FromResource(resourcePath);
+                if (IsCompleteMinecraftSkin(skin))
+                {
+                    allSkins.Add(skin);
+                }
             }
 
             foreach (string directory in GetSkinDirectories())
@@ -108,8 +423,7 @@ namespace XylarBedrock.Pages.Skins
                 }
 
                 IEnumerable<string> skinFiles = Directory.EnumerateFiles(directory, "*.*", SearchOption.TopDirectoryOnly)
-                    .Where(IsSupportedSkinImage)
-                    .Where(path => Path.GetFileName(path).IndexOf("cape", StringComparison.OrdinalIgnoreCase) < 0)
+                    .Where(path => !ShouldSkipSkinFile(path))
                     .OrderBy(Path.GetFileName, StringComparer.OrdinalIgnoreCase);
 
                 foreach (string skinFile in skinFiles)
@@ -121,7 +435,11 @@ namespace XylarBedrock.Pages.Skins
                         continue;
                     }
 
-                    allSkins.Add(SkinEntry.FromFile(resolvedSkinFile));
+                    SkinEntry skin = SkinEntry.FromFile(resolvedSkinFile);
+                    if (IsCompleteMinecraftSkin(skin))
+                    {
+                        allSkins.Add(skin);
+                    }
                 }
             }
         }
@@ -133,28 +451,52 @@ namespace XylarBedrock.Pages.Skins
             if (allSkins.Count == 0)
             {
                 EmptySkinsText.Visibility = Visibility.Visible;
-                DownloadButton.IsEnabled = false;
                 SkinCounterText.Text = string.Empty;
                 DownloadStatusText.Text = T("SkinsPage_NoSkinsFoundShort", "No skins found.");
                 return;
             }
 
             EmptySkinsText.Visibility = Visibility.Collapsed;
+            previewWarmupToken++;
 
-            foreach (SkinEntry skin in allSkins)
+            List<SkinEntry> previewSkins = allSkins.Take(PreviewSkinLimit).ToList();
+            foreach (SkinEntry skin in previewSkins)
             {
-                skin.EnsurePreview();
                 VisibleSkins.Add(skin);
             }
 
-            DownloadButton.IsEnabled = true;
-            SkinCounterText.Text = string.Format(
-                System.Globalization.CultureInfo.CurrentCulture,
-                T("SkinsPage_CollectionCountFormat", "{0} skins included in one pack."),
-                allSkins.Count);
-            DownloadStatusText.Text = T("SkinsPage_AllSkinsHelp", "Click DOWNLOADS to import every skin together.");
+            SkinCounterText.Text = allSkins.Count <= PreviewSkinLimit
+                ? string.Format(
+                    System.Globalization.CultureInfo.CurrentCulture,
+                    T("SkinsPage_CollectionCountFormat", "{0} skins included in one pack."),
+                    allSkins.Count)
+                : $"{allSkins.Count} skins included in one pack. Showing {previewSkins.Count} previews for speed.";
+            DownloadStatusText.Text = T("SkinsPage_AllSkinsHelp", "Click DOWNLOADS to save the original skin pack zip.");
 
             PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(VisibleSkins)));
+            BeginPreviewWarmup(previewSkins, previewWarmupToken);
+        }
+
+        private void BeginPreviewWarmup(IReadOnlyList<SkinEntry> skins, int token, int startIndex = 0)
+        {
+            Dispatcher.BeginInvoke(new Action(() =>
+            {
+                if (token != previewWarmupToken || startIndex >= skins.Count)
+                {
+                    return;
+                }
+
+                int endIndex = Math.Min(startIndex + PreviewWarmupBatchSize, skins.Count);
+                for (int i = startIndex; i < endIndex; i++)
+                {
+                    skins[i].EnsurePreview();
+                }
+
+                if (endIndex < skins.Count)
+                {
+                    BeginPreviewWarmup(skins, token, endIndex);
+                }
+            }), DispatcherPriority.Background);
         }
 
         private static string T(string key, string fallback)
@@ -185,10 +527,203 @@ namespace XylarBedrock.Pages.Skins
             return destinationPath;
         }
 
-        private static int CreateMinecraftSkinPack(IEnumerable<SkinEntry> skins, string destinationPath)
+        private static void ShowFileInExplorer(string filePath)
         {
-            const string packName = "Fave's Skins";
-            const string serializeName = "xylarbedrock_faves_skins";
+            try
+            {
+                Process.Start(new ProcessStartInfo
+                {
+                    FileName = "explorer.exe",
+                    Arguments = $"/select,\"{filePath}\"",
+                    UseShellExecute = true
+                });
+            }
+            catch (Exception ex)
+            {
+                Trace.WriteLine($"Could not select exported file '{filePath}': {ex}");
+            }
+        }
+
+        private static string EnsureTutorialVideoFile()
+        {
+            string cacheDirectory = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "XylarBedrock",
+                "videos");
+            Directory.CreateDirectory(cacheDirectory);
+
+            string destinationPath = Path.Combine(cacheDirectory, TutorialVideoFileName);
+            StreamResourceInfo resourceInfo = Application.GetResourceStream(new Uri(TutorialVideoResourcePath, UriKind.Relative)) ??
+                                              Application.GetResourceStream(new Uri(TutorialVideoResourcePath.ToLowerInvariant(), UriKind.Relative));
+            if (resourceInfo?.Stream == null)
+            {
+                throw new FileNotFoundException("Embedded tutorial video was not found.", TutorialVideoResourcePath);
+            }
+
+            using (resourceInfo.Stream)
+            {
+                long embeddedLength = resourceInfo.Stream.CanSeek ? resourceInfo.Stream.Length : -1;
+                if (File.Exists(destinationPath))
+                {
+                    long cachedLength = new FileInfo(destinationPath).Length;
+                    if (cachedLength > 0 && (embeddedLength < 0 || cachedLength == embeddedLength))
+                    {
+                        return destinationPath;
+                    }
+                }
+
+                using FileStream output = File.Create(destinationPath);
+                resourceInfo.Stream.CopyTo(output);
+            }
+
+            return destinationPath;
+        }
+
+        private static string EnsureTutorialPlayerHtmlFile()
+        {
+            string videoPath = EnsureTutorialVideoFile();
+            string playerDirectory = Path.GetDirectoryName(videoPath);
+            string htmlPath = Path.Combine(playerDirectory, "faves_skinpack_tutorial_player.html");
+            File.WriteAllText(htmlPath, BuildTutorialPlayerHtml(TutorialVideoFileName), Encoding.UTF8);
+            return htmlPath;
+        }
+
+        private static string BuildTutorialPlayerHtml(string videoFileName)
+        {
+            string safeVideoFileName = System.Net.WebUtility.HtmlEncode(videoFileName);
+            return @"<!doctype html>
+<html>
+<head>
+<meta charset=""utf-8"">
+<meta name=""viewport"" content=""width=device-width,initial-scale=1"">
+<style>
+html,body{margin:0;width:100%;height:100%;background:#000;overflow:hidden;font-family:Arial,sans-serif;}
+#wrap{position:fixed;inset:0;background:#000;display:flex;align-items:center;justify-content:center;}
+video{width:100%;height:100%;background:#000;object-fit:contain;}
+#hint{position:fixed;left:14px;bottom:14px;color:#fff;background:rgba(0,0,0,.55);border:1px solid rgba(255,255,255,.18);border-radius:6px;padding:7px 10px;font-size:12px;opacity:.9;transition:opacity .25s;}
+body.playing #hint{opacity:0;}
+</style>
+</head>
+<body>
+<div id=""wrap"">
+<video id=""video"" src=""" + safeVideoFileName + @""" autoplay controls playsinline preload=""auto""></video>
+</div>
+<div id=""hint"">If it does not start, press PLAY.</div>
+<script>
+const video = document.getElementById('video');
+function mark(){ document.body.classList.toggle('playing', !video.paused); }
+function forcePlay(){
+  try {
+    video.muted = false;
+    const attempt = video.play();
+    if (attempt && attempt.catch) {
+      attempt.catch(() => {
+        video.muted = true;
+        video.play().catch(() => {});
+      });
+    }
+  } catch (e) {
+    try {
+      video.muted = true;
+      video.play().catch(() => {});
+    } catch (_) {}
+  }
+  mark();
+  return !video.paused;
+}
+window.xylarPlay = forcePlay;
+window.xylarPause = function(){ video.pause(); mark(); return false; };
+window.xylarToggle = function(){
+  if (video.paused || video.ended) {
+    if (video.ended) video.currentTime = 0;
+    forcePlay();
+    return true;
+  }
+  video.pause();
+  mark();
+  return false;
+};
+window.xylarSeekBy = function(seconds){
+  if (!Number.isFinite(video.duration)) return video.currentTime || 0;
+  video.currentTime = Math.max(0, Math.min(video.duration, (video.currentTime || 0) + seconds));
+  return video.currentTime;
+};
+window.xylarSeekTo = function(seconds){
+  if (!Number.isFinite(video.duration)) return video.currentTime || 0;
+  video.currentTime = Math.max(0, Math.min(video.duration, seconds));
+  return video.currentTime;
+};
+window.xylarState = function(){
+  return {
+    position: video.currentTime || 0,
+    duration: Number.isFinite(video.duration) ? video.duration : 0,
+    paused: video.paused
+  };
+};
+video.addEventListener('loadedmetadata', forcePlay);
+video.addEventListener('canplay', forcePlay, { once:true });
+video.addEventListener('play', mark);
+video.addEventListener('pause', mark);
+video.addEventListener('ended', mark);
+setTimeout(forcePlay, 150);
+setTimeout(forcePlay, 650);
+</script>
+</body>
+</html>";
+        }
+
+        private static IReadOnlyList<string> CreateMinecraftSkinPacks(IEnumerable<SkinEntry> skins, string skinsDirectory, out int exportedCount)
+        {
+            List<SkinEntry> skinList = skins.ToList();
+            int totalPacks = Math.Max(1, (int)Math.Ceiling(skinList.Count / (double)MaxSkinsPerMinecraftPack));
+            List<string> packPaths = new List<string>();
+            exportedCount = 0;
+
+            for (int packIndex = 0; packIndex < totalPacks; packIndex++)
+            {
+                List<SkinEntry> packSkins = skinList
+                    .Skip(packIndex * MaxSkinsPerMinecraftPack)
+                    .Take(MaxSkinsPerMinecraftPack)
+                    .ToList();
+                if (packSkins.Count == 0)
+                {
+                    continue;
+                }
+
+                bool isSplitPack = totalPacks > 1;
+                string partSuffix = $"part{packIndex + 1:00}";
+                string packName = isSplitPack
+                    ? $"{FavesSkinPackName} {packIndex + 1}/{totalPacks}"
+                    : FavesSkinPackName;
+                string serializeName = isSplitPack
+                    ? $"{FavesSkinPackSerializeName}_{partSuffix}"
+                    : FavesSkinPackSerializeName;
+                string packFileName = isSplitPack
+                    ? $"Faves-Skins-V5-Part{packIndex + 1:00}.mcpack"
+                    : "Faves-Skins.mcpack";
+                string destinationPath = GetUniqueDownloadPath(Path.Combine(skinsDirectory, packFileName));
+
+                exportedCount += CreateMinecraftSkinPack(
+                    packSkins,
+                    destinationPath,
+                    packName,
+                    serializeName,
+                    isSplitPack ? Guid.NewGuid() : FavesSkinPackHeaderUuid,
+                    isSplitPack ? Guid.NewGuid() : FavesSkinPackModuleUuid);
+                packPaths.Add(destinationPath);
+            }
+
+            return packPaths;
+        }
+
+        private static int CreateMinecraftSkinPack(
+            IEnumerable<SkinEntry> skins,
+            string destinationPath,
+            string packName,
+            string serializeName,
+            Guid headerUuid,
+            Guid moduleUuid)
+        {
             List<SkinPackEntry> packEntries = new List<SkinPackEntry>();
 
             foreach (SkinEntry skin in skins)
@@ -200,13 +735,34 @@ namespace XylarBedrock.Pages.Skins
                         string displayName = Path.GetFileNameWithoutExtension(skin.FileName);
                         string slug = Slugify(displayName);
                         int index = packEntries.Count + 1;
-                        packEntries.Add(new SkinPackEntry
+                        SkinPackEntry packEntry = new SkinPackEntry
                         {
                             DisplayName = string.IsNullOrWhiteSpace(displayName) ? $"Skin {index}" : displayName,
                             LocalizationName = $"skin_{index:000}_{slug}",
-                            TexturePath = $"skins/skin_{index:000}_{slug}.png",
+                            TexturePath = $"skin_{index:000}_{slug}.png",
                             PngBytes = BuildMinecraftReadySkinPng(skinStream)
-                        });
+                        };
+
+                        Stream capeStream = TryOpenCapeStreamForSkin(skin);
+                        if (capeStream != null)
+                        {
+                            using (capeStream)
+                            {
+                                try
+                                {
+                                    packEntry.CapePath = $"cape_{index:000}_{slug}.png";
+                                    packEntry.CapePngBytes = BuildMinecraftReadyCapePng(capeStream);
+                                }
+                                catch (Exception capeEx)
+                                {
+                                    Debug.WriteLine($"Skipping cape for {skin.FileName}: {capeEx.Message}");
+                                    packEntry.CapePath = null;
+                                    packEntry.CapePngBytes = null;
+                                }
+                            }
+                        }
+
+                        packEntries.Add(packEntry);
                     }
                 }
                 catch (Exception ex)
@@ -222,19 +778,132 @@ namespace XylarBedrock.Pages.Skins
 
             using (ZipArchive archive = ZipFile.Open(destinationPath, ZipArchiveMode.Create))
             {
-                WriteTextEntry(archive, "manifest.json", BuildSkinPackManifest(packName));
+                WriteTextEntry(archive, "manifest.json", BuildSkinPackManifest(headerUuid, moduleUuid));
                 WriteTextEntry(archive, "skins.json", BuildSkinPackJson(serializeName, packEntries));
+                WriteTextEntry(archive, "texts/languages.json", BuildSkinPackLanguagesJson());
                 WriteTextEntry(archive, "texts/en_US.lang", BuildSkinPackLang(serializeName, packName, packEntries));
 
                 foreach (SkinPackEntry entry in packEntries)
                 {
                     WriteBytesEntry(archive, entry.TexturePath, entry.PngBytes);
+                    if (!string.IsNullOrWhiteSpace(entry.CapePath) && entry.CapePngBytes != null)
+                    {
+                        WriteBytesEntry(archive, entry.CapePath, entry.CapePngBytes);
+                    }
                 }
 
                 WriteBytesEntry(archive, "pack_icon.png", packEntries[0].PngBytes);
             }
 
             return packEntries.Count;
+        }
+
+        private static IReadOnlyList<string> InstallSkinPackIntoMinecraftFolders(string skinPackPath, string folderName = FavesSkinPackFolderName)
+        {
+            List<string> installedPaths = new List<string>();
+
+            foreach (string skinPackDirectory in GetMinecraftSkinPackDirectories())
+            {
+                try
+                {
+                    Directory.CreateDirectory(skinPackDirectory);
+                    string targetDirectory = Path.Combine(skinPackDirectory, folderName);
+
+                    if (Directory.Exists(targetDirectory))
+                    {
+                        Directory.Delete(targetDirectory, true);
+                    }
+
+                    Directory.CreateDirectory(targetDirectory);
+                    ZipFile.ExtractToDirectory(skinPackPath, targetDirectory, true);
+                    installedPaths.Add(targetDirectory);
+                    Trace.WriteLine($"Installed Fave's Skins directly to '{targetDirectory}'.");
+                }
+                catch (Exception ex)
+                {
+                    Trace.WriteLine($"Could not install Fave's Skins into '{skinPackDirectory}': {ex}");
+                }
+            }
+
+            return installedPaths;
+        }
+
+        private static IEnumerable<string> GetMinecraftSkinPackDirectories()
+        {
+            string localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+            string packagesDirectory = Path.Combine(localAppData, "Packages");
+            HashSet<string> directories = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            try
+            {
+                if (Directory.Exists(packagesDirectory))
+                {
+                    foreach (string packageDirectory in Directory.EnumerateDirectories(packagesDirectory, "*Minecraft*", SearchOption.TopDirectoryOnly))
+                    {
+                        string packageName = Path.GetFileName(packageDirectory);
+                        if (packageName.EndsWith("MinecraftUWP_8wekyb3d8bbwe", StringComparison.OrdinalIgnoreCase) ||
+                            packageName.EndsWith("MinecraftWindowsBeta_8wekyb3d8bbwe", StringComparison.OrdinalIgnoreCase))
+                        {
+                            AddMojangSkinPackDirectories(directories, Path.Combine(packageDirectory, "LocalState", "games", "com.mojang"));
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Trace.WriteLine($"Could not inspect Minecraft package folders for skin packs: {ex}");
+            }
+
+            string defaultMojangDirectory = Path.Combine(
+                localAppData,
+                "Packages",
+                "Microsoft.MinecraftUWP_8wekyb3d8bbwe",
+                "LocalState",
+                "games",
+                "com.mojang");
+            AddMojangSkinPackDirectories(directories, defaultMojangDirectory);
+
+            return directories;
+        }
+
+        private static void AddMojangSkinPackDirectories(ISet<string> directories, string mojangDirectory)
+        {
+            AddSkinPackDirectoryPair(directories, mojangDirectory);
+
+            try
+            {
+                if (!Directory.Exists(mojangDirectory))
+                {
+                    return;
+                }
+
+                DirectoryInfo mojangDirectoryInfo = new DirectoryInfo(mojangDirectory);
+                if ((mojangDirectoryInfo.Attributes & FileAttributes.ReparsePoint) == 0)
+                {
+                    return;
+                }
+
+                FileSystemInfo resolvedTarget = mojangDirectoryInfo.ResolveLinkTarget(true);
+                if (!string.IsNullOrWhiteSpace(resolvedTarget?.FullName))
+                {
+                    AddSkinPackDirectoryPair(directories, resolvedTarget.FullName);
+                }
+            }
+            catch (Exception ex)
+            {
+                Trace.WriteLine($"Could not resolve Minecraft com.mojang link '{mojangDirectory}': {ex}");
+            }
+        }
+
+        private static void AddSkinPackDirectoryPair(ISet<string> directories, string mojangDirectory)
+        {
+            if (string.IsNullOrWhiteSpace(mojangDirectory))
+            {
+                return;
+            }
+
+            directories.Add(Path.Combine(mojangDirectory, "skin_packs"));
+            directories.Add(Path.Combine(mojangDirectory, "development_skin_packs"));
         }
 
         private static void OpenDownloadedSkinPack(string destinationPath)
@@ -258,20 +927,19 @@ namespace XylarBedrock.Pages.Skins
             }
         }
 
-        private static string BuildSkinPackManifest(string displayName)
+        private static string BuildSkinPackManifest(Guid headerUuid, Guid moduleUuid)
         {
             return "{\n" +
                    "  \"format_version\": 1,\n" +
                    "  \"header\": {\n" +
-                   $"    \"name\": \"{JsonEscape(displayName)}\",\n" +
-                   "    \"description\": \"Skins by xFaveXEditz, packed by XylarBedrock\",\n" +
-                   $"    \"uuid\": \"{Guid.NewGuid()}\",\n" +
+                   "    \"name\": \"pack.name\",\n" +
+                   $"    \"uuid\": \"{headerUuid}\",\n" +
                    "    \"version\": [1, 0, 0]\n" +
                    "  },\n" +
                    "  \"modules\": [\n" +
                    "    {\n" +
                    "      \"type\": \"skin_pack\",\n" +
-                   $"      \"uuid\": \"{Guid.NewGuid()}\",\n" +
+                   $"      \"uuid\": \"{moduleUuid}\",\n" +
                    "      \"version\": [1, 0, 0]\n" +
                    "    }\n" +
                    "  ]\n" +
@@ -293,6 +961,11 @@ namespace XylarBedrock.Pages.Skins
                 builder.AppendLine($"      \"localization_name\": \"{JsonEscape(entry.LocalizationName)}\",");
                 builder.AppendLine("      \"geometry\": \"geometry.humanoid.customSlim\",");
                 builder.AppendLine($"      \"texture\": \"{JsonEscape(entry.TexturePath)}\",");
+                if (!string.IsNullOrWhiteSpace(entry.CapePath))
+                {
+                    builder.AppendLine($"      \"cape\": \"{JsonEscape(entry.CapePath)}\",");
+                }
+
                 builder.AppendLine("      \"type\": \"free\"");
                 builder.Append("    }");
                 builder.AppendLine(i == entries.Count - 1 ? string.Empty : ",");
@@ -303,9 +976,16 @@ namespace XylarBedrock.Pages.Skins
             return builder.ToString();
         }
 
+        private static string BuildSkinPackLanguagesJson()
+        {
+            return "[\n  \"en_US\"\n]\n";
+        }
+
         private static string BuildSkinPackLang(string serializeName, string packName, IReadOnlyList<SkinPackEntry> entries)
         {
             StringBuilder builder = new StringBuilder();
+            builder.AppendLine($"pack.name={packName}");
+            builder.AppendLine("pack.description=Skins by xFaveXEditz, packed by XylarBedrock");
             builder.AppendLine($"skinpack.{serializeName}={packName}");
 
             foreach (SkinPackEntry entry in entries)
@@ -318,12 +998,32 @@ namespace XylarBedrock.Pages.Skins
 
         private static byte[] BuildMinecraftReadySkinPng(Stream sourceStream)
         {
-            BitmapDecoder decoder = BitmapDecoder.Create(
-                sourceStream,
-                BitmapCreateOptions.PreservePixelFormat,
-                BitmapCacheOption.OnLoad);
+            byte[] sourceBytes = ReadAllBytes(sourceStream);
+            BitmapSource source = DecodeBitmap(sourceBytes);
+            ValidateMinecraftSkin(source);
 
-            BitmapSource source = decoder.Frames[0];
+            return IsPng(sourceBytes) ? sourceBytes : EncodePng(source);
+        }
+
+        private static bool IsCompleteMinecraftSkin(SkinEntry skin)
+        {
+            try
+            {
+                using (Stream stream = skin.OpenRead())
+                {
+                    ValidateMinecraftSkin(DecodeBitmap(ReadAllBytes(stream)));
+                    return true;
+                }
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"Skipping incomplete skin '{skin.FileName}': {ex.Message}");
+                return false;
+            }
+        }
+
+        private static void ValidateMinecraftSkin(BitmapSource source)
+        {
             int sourceWidth = source.PixelWidth;
             int sourceHeight = source.PixelHeight;
             bool isSquareSkin = sourceWidth == sourceHeight && sourceWidth % 64 == 0;
@@ -334,36 +1034,169 @@ namespace XylarBedrock.Pages.Skins
                 throw new InvalidDataException($"Unsupported Minecraft skin size: {sourceWidth}x{sourceHeight}.");
             }
 
-            int targetWidth = 64;
-            int targetHeight = isClassicSkin ? 32 : 64;
+            if (!HasRequiredSkinParts(source))
+            {
+                throw new InvalidDataException("Skin is missing one or more required body parts.");
+            }
+        }
 
-            BitmapSource bgraSource = source.Format == PixelFormats.Bgra32
-                ? source
-                : new FormatConvertedBitmap(source, PixelFormats.Bgra32, null, 0);
-
-            int sourceStride = sourceWidth * 4;
-            byte[] sourcePixels = new byte[sourceStride * sourceHeight];
-            bgraSource.CopyPixels(sourcePixels, sourceStride, 0);
-
-            byte[] targetPixels = ResizeNearestNeighbor(sourcePixels, sourceWidth, sourceHeight, targetWidth, targetHeight);
-            BitmapSource output = BitmapSource.Create(
-                targetWidth,
-                targetHeight,
-                96,
-                96,
+        private static bool HasRequiredSkinParts(BitmapSource source)
+        {
+            FormatConvertedBitmap converted = new FormatConvertedBitmap(
+                source,
                 PixelFormats.Bgra32,
                 null,
-                targetPixels,
-                targetWidth * 4);
+                0);
+            converted.Freeze();
 
+            int stride = converted.PixelWidth * 4;
+            byte[] pixels = new byte[stride * converted.PixelHeight];
+            converted.CopyPixels(pixels, stride, 0);
+            double scale = converted.PixelWidth / 64.0;
+
+            foreach (SkinRequiredRegion region in RequiredSkinRegions)
+            {
+                if (GetOpaqueCoverage(pixels, stride, scale, region) < region.MinimumCoverage)
+                {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
+        private static double GetOpaqueCoverage(byte[] pixels, int stride, double scale, SkinRequiredRegion region)
+        {
+            int x = (int)Math.Round(region.X * scale);
+            int y = (int)Math.Round(region.Y * scale);
+            int width = Math.Max(1, (int)Math.Round(region.Width * scale));
+            int height = Math.Max(1, (int)Math.Round(region.Height * scale));
+            int opaquePixels = 0;
+            int totalPixels = width * height;
+
+            for (int row = y; row < y + height; row++)
+            {
+                for (int column = x; column < x + width; column++)
+                {
+                    int alphaIndex = row * stride + column * 4 + 3;
+                    if (alphaIndex >= 0 && alphaIndex < pixels.Length && pixels[alphaIndex] > 8)
+                    {
+                        opaquePixels++;
+                    }
+                }
+            }
+
+            return totalPixels == 0 ? 0 : opaquePixels / (double)totalPixels;
+        }
+
+        private static byte[] BuildMinecraftReadyCapePng(Stream sourceStream)
+        {
+            byte[] sourceBytes = ReadAllBytes(sourceStream);
+            BitmapSource source = DecodeBitmap(sourceBytes);
+
+            if (source.PixelWidth == 64 && source.PixelHeight == 32)
+            {
+                return IsPng(sourceBytes) ? sourceBytes : EncodePng(source);
+            }
+
+            if (source.PixelWidth == 64 && source.PixelHeight > 32)
+            {
+                CroppedBitmap cropped = new CroppedBitmap(source, new Int32Rect(0, 0, 64, 32));
+                cropped.Freeze();
+                return EncodePng(cropped);
+            }
+
+            throw new InvalidDataException($"Unsupported Minecraft cape size: {source.PixelWidth}x{source.PixelHeight}.");
+        }
+
+        private static BitmapSource DecodeBitmap(byte[] sourceBytes)
+        {
+            using (MemoryStream memoryStream = new MemoryStream(sourceBytes))
+            {
+                BitmapDecoder decoder = BitmapDecoder.Create(
+                    memoryStream,
+                    BitmapCreateOptions.PreservePixelFormat,
+                    BitmapCacheOption.OnLoad);
+                BitmapSource source = decoder.Frames[0];
+                source.Freeze();
+                return source;
+            }
+        }
+
+        private static byte[] EncodePng(BitmapSource source)
+        {
             PngBitmapEncoder encoder = new PngBitmapEncoder();
-            encoder.Frames.Add(BitmapFrame.Create(output));
-
+            encoder.Frames.Add(BitmapFrame.Create(source));
             using (MemoryStream outputStream = new MemoryStream())
             {
                 encoder.Save(outputStream);
                 return outputStream.ToArray();
             }
+        }
+
+        private static byte[] ReadAllBytes(Stream stream)
+        {
+            using (MemoryStream memoryStream = new MemoryStream())
+            {
+                stream.CopyTo(memoryStream);
+                return memoryStream.ToArray();
+            }
+        }
+
+        private static bool IsPng(byte[] bytes)
+        {
+            return bytes != null &&
+                   bytes.Length >= 8 &&
+                   bytes[0] == 0x89 &&
+                   bytes[1] == 0x50 &&
+                   bytes[2] == 0x4E &&
+                   bytes[3] == 0x47 &&
+                   bytes[4] == 0x0D &&
+                   bytes[5] == 0x0A &&
+                   bytes[6] == 0x1A &&
+                   bytes[7] == 0x0A;
+        }
+
+        private static Stream TryOpenCapeStreamForSkin(SkinEntry skin)
+        {
+            foreach (string capeFileName in GetCapeCandidateFileNames(skin.FileName))
+            {
+                if (!string.IsNullOrWhiteSpace(skin.FilePath))
+                {
+                    string capeFilePath = Path.Combine(Path.GetDirectoryName(skin.FilePath), capeFileName);
+                    if (File.Exists(capeFilePath))
+                    {
+                        return File.OpenRead(capeFilePath);
+                    }
+                }
+
+                if (!string.IsNullOrWhiteSpace(skin.ResourcePath))
+                {
+                    string capeResourcePath = BuildManifestSkinResourcePath(capeFileName, GetSkinResourceRoot(skin.ResourcePath));
+                    StreamResourceInfo resourceInfo = Application.GetResourceStream(new Uri(capeResourcePath, UriKind.Relative));
+                    if (resourceInfo?.Stream != null)
+                    {
+                        return resourceInfo.Stream;
+                    }
+                }
+            }
+
+            return null;
+        }
+
+        private static IEnumerable<string> GetCapeCandidateFileNames(string skinFileName)
+        {
+            HashSet<string> candidates = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            string fileName = Path.GetFileName(skinFileName);
+            if (string.IsNullOrWhiteSpace(fileName))
+            {
+                return candidates;
+            }
+
+            candidates.Add(Regex.Replace(fileName, "skin", "Cape", RegexOptions.IgnoreCase));
+            candidates.Add(Regex.Replace(fileName, "-skin", "-Cape", RegexOptions.IgnoreCase));
+            return candidates.Where(candidate =>
+                !string.Equals(candidate, fileName, StringComparison.OrdinalIgnoreCase));
         }
 
         private static byte[] ResizeNearestNeighbor(byte[] sourcePixels, int sourceWidth, int sourceHeight, int targetWidth, int targetHeight)
@@ -470,6 +1303,7 @@ namespace XylarBedrock.Pages.Skins
                 return;
             }
 
+            TryAddSkinDirectory(directories, Path.Combine(baseDirectory, "Resources", "persona"));
             TryAddSkinDirectory(directories, Path.Combine(baseDirectory, "Resources", "skins"));
 
             try
@@ -477,6 +1311,7 @@ namespace XylarBedrock.Pages.Skins
                 DirectoryInfo current = new DirectoryInfo(baseDirectory);
                 for (int i = 0; i < 8 && current != null; i++)
                 {
+                    TryAddSkinDirectory(directories, Path.Combine(current.FullName, "Resources", "persona"));
                     TryAddSkinDirectory(directories, Path.Combine(current.FullName, "Resources", "skins"));
                     current = current.Parent;
                 }
@@ -512,13 +1347,17 @@ namespace XylarBedrock.Pages.Skins
         {
             string fileName = Path.GetFileNameWithoutExtension(path);
             return !IsSupportedSkinImage(path) ||
-                   Path.GetFileName(path).IndexOf("cape", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                   fileName.IndexOf("asteroidnqte", StringComparison.OrdinalIgnoreCase) >= 0;
+                   Path.GetFileName(path).IndexOf("cape", StringComparison.OrdinalIgnoreCase) >= 0;
         }
 
         private static IEnumerable<string> GetEmbeddedSkinResourcePaths()
         {
             List<string> resourcePaths = new List<string>();
+
+            foreach (string resourcePath in GetSkinManifestResourcePaths())
+            {
+                AddEmbeddedSkinResourcePath(resourcePaths, resourcePath);
+            }
 
             try
             {
@@ -537,13 +1376,13 @@ namespace XylarBedrock.Pages.Skins
                         {
                             string resourcePath = entry.Key as string;
                             if (string.IsNullOrWhiteSpace(resourcePath) ||
-                                !resourcePath.StartsWith("resources/skins/", StringComparison.OrdinalIgnoreCase) ||
+                                !IsSkinResourcePath(resourcePath) ||
                                 ShouldSkipSkinFile(resourcePath))
                             {
                                 continue;
                             }
 
-                            resourcePaths.Add(resourcePath);
+                            AddEmbeddedSkinResourcePath(resourcePaths, resourcePath);
                         }
                     }
                 }
@@ -554,6 +1393,115 @@ namespace XylarBedrock.Pages.Skins
             }
 
             return resourcePaths.OrderBy(GetResourceFileName, StringComparer.OrdinalIgnoreCase);
+        }
+
+        private static void AddEmbeddedSkinResourcePath(IList<string> resourcePaths, string resourcePath)
+        {
+            if (string.IsNullOrWhiteSpace(resourcePath) || ShouldSkipSkinFile(resourcePath))
+            {
+                return;
+            }
+
+            string fileName = GetResourceFileName(resourcePath);
+            if (resourcePaths.Any(existingPath =>
+                    string.Equals(GetResourceFileName(existingPath), fileName, StringComparison.OrdinalIgnoreCase)))
+            {
+                return;
+            }
+
+            resourcePaths.Add(resourcePath);
+        }
+
+        private static IEnumerable<string> GetSkinManifestResourcePaths()
+        {
+            List<string> resourcePaths = new List<string>();
+
+            foreach (string resourceRoot in SkinResourceRoots)
+            {
+                try
+                {
+                    StreamResourceInfo manifestInfo = Application.GetResourceStream(new Uri($"{resourceRoot}skins.json", UriKind.Relative)) ??
+                                                      Application.GetResourceStream(new Uri($"{ToResourceDisplayRoot(resourceRoot)}skins.json", UriKind.Relative));
+                    if (manifestInfo?.Stream == null)
+                    {
+                        continue;
+                    }
+
+                    using (StreamReader reader = new StreamReader(manifestInfo.Stream, Encoding.UTF8))
+                    {
+                        string manifestJson = reader.ReadToEnd();
+                        foreach (Match match in Regex.Matches(manifestJson, "\"texture\"\\s*:\\s*\"(?<texture>[^\"]+)\""))
+                        {
+                            string resourcePath = BuildManifestSkinResourcePath(match.Groups["texture"].Value, resourceRoot);
+
+                            if (!ShouldSkipSkinFile(resourcePath) &&
+                                !resourcePaths.Contains(resourcePath, StringComparer.OrdinalIgnoreCase))
+                            {
+                                resourcePaths.Add(resourcePath);
+                            }
+                        }
+                    }
+                }
+                catch
+                {
+                    // The resource table fallback still covers builds without a skin manifest.
+                }
+            }
+
+            return resourcePaths;
+        }
+
+        private static string BuildManifestSkinResourcePath(string texturePath)
+        {
+            return BuildManifestSkinResourcePath(texturePath, SkinResourceRoots[0]);
+        }
+
+        private static string BuildManifestSkinResourcePath(string texturePath, string resourceRoot)
+        {
+            string normalizedTexturePath = (texturePath ?? string.Empty)
+                .Replace("\\/", "/", StringComparison.Ordinal)
+                .Replace('\\', '/')
+                .TrimStart('/');
+
+            string escapedTexturePath = string.Join(
+                "/",
+                normalizedTexturePath
+                    .Split(new[] { '/' }, StringSplitOptions.RemoveEmptyEntries)
+                    .Select(segment => Uri.EscapeDataString(segment)));
+
+            return $"{NormalizeResourceRoot(resourceRoot)}{escapedTexturePath}".ToLowerInvariant();
+        }
+
+        private static bool IsSkinResourcePath(string resourcePath)
+        {
+            return SkinResourceRoots.Any(root =>
+                resourcePath.StartsWith(root, StringComparison.OrdinalIgnoreCase));
+        }
+
+        private static string GetSkinResourceRoot(string resourcePath)
+        {
+            return SkinResourceRoots.FirstOrDefault(root =>
+                       resourcePath.StartsWith(root, StringComparison.OrdinalIgnoreCase)) ??
+                   SkinResourceRoots[0];
+        }
+
+        private static string NormalizeResourceRoot(string resourceRoot)
+        {
+            string normalizedRoot = string.IsNullOrWhiteSpace(resourceRoot)
+                ? SkinResourceRoots[0]
+                : resourceRoot.Replace('\\', '/').TrimStart('/');
+
+            return normalizedRoot.EndsWith("/", StringComparison.Ordinal)
+                ? normalizedRoot
+                : normalizedRoot + "/";
+        }
+
+        private static string ToResourceDisplayRoot(string resourceRoot)
+        {
+            string normalizedRoot = NormalizeResourceRoot(resourceRoot);
+            return normalizedRoot.StartsWith("resources/", StringComparison.OrdinalIgnoreCase)
+                ? "Resources/" + normalizedRoot.Substring("resources/".Length)
+                : normalizedRoot;
         }
 
         private static string GetResourceFileName(string resourcePath)
@@ -571,6 +1519,35 @@ namespace XylarBedrock.Pages.Skins
             public string TexturePath { get; set; }
 
             public byte[] PngBytes { get; set; }
+
+            public string CapePath { get; set; }
+
+            public byte[] CapePngBytes { get; set; }
+        }
+
+        private sealed class SkinRequiredRegion
+        {
+            public SkinRequiredRegion(string name, int x, int y, int width, int height, double minimumCoverage)
+            {
+                Name = name;
+                X = x;
+                Y = y;
+                Width = width;
+                Height = height;
+                MinimumCoverage = minimumCoverage;
+            }
+
+            public string Name { get; }
+
+            public int X { get; }
+
+            public int Y { get; }
+
+            public int Width { get; }
+
+            public int Height { get; }
+
+            public double MinimumCoverage { get; }
         }
 
         public class SkinEntry : INotifyPropertyChanged

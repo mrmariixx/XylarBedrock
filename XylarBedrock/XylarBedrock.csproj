@@ -169,6 +169,18 @@
 		<Resource Include="Resources\skins\**\*.*" />
 	</ItemGroup>
 	<ItemGroup>
+		<None Remove="Resources\persona\**\*.*" />
+		<Resource Include="Resources\persona\**\*.*" />
+	</ItemGroup>
+	<ItemGroup>
+		<None Remove="Resources\skinpacks\**\*.*" />
+		<Resource Include="Resources\skinpacks\**\*.*" />
+	</ItemGroup>
+	<ItemGroup>
+		<None Remove="Resources\videos\**\*.*" />
+		<Resource Include="Resources\videos\**\*.*" />
+	</ItemGroup>
+	<ItemGroup>
 		<Resource Include="Resources\addons\actions.jpg" />
 	</ItemGroup>
 	<ItemGroup>

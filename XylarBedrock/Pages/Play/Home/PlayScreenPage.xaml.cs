@@ -11,6 +11,7 @@ using System.Windows.Controls;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using XylarBedrock.Classes.Launcher;
+using XylarBedrock.UpdateProcessor.Classes;
 using XylarBedrock.UpdateProcessor.Extensions;
 using XylarBedrock.UpdateProcessor.Enums;
 using System.Collections.Generic;
@@ -200,7 +201,7 @@ namespace XylarBedrock.Pages.Play.Home
                 ApplyButtonDetails("The selected Minecraft version is not ready yet. Reopen the launcher once if this keeps happening.");
                 ApplyStoreButtonStyle("Select Installation", Brushes.LightGray, 18);
             }
-            else if (!selectedInstallation.IsInstalledVersion)
+            else if (!IsInstallationPlayableNow(selectedInstallation))
             {
                 MainPlayButton.IsEnabled = MainDataModel.Default.ProgressBarState.AllowPlaying;
                 ApplyButtonDetails("Install the selected Minecraft version once. After that this button will switch to PLAY.");
@@ -281,7 +282,22 @@ namespace XylarBedrock.Pages.Play.Home
             }
 
             MCVersion activeVersion = GetPlayableVersions().FirstOrDefault() ?? GetOfficialStorePlayableVersion();
-            return activeVersion == null ? null : MainDataModel.Default.Config.SelectInstallationForVersion(activeVersion);
+            BLInstallation activeInstallation = activeVersion == null
+                ? null
+                : MainDataModel.Default.Config.SelectInstallationForVersion(activeVersion);
+
+            if (activeInstallation != null)
+            {
+                return activeInstallation;
+            }
+
+            BLInstallation currentInstallation = MainDataModel.Default.Config?.CurrentInstallation;
+            if (IsInstallationPlayableNow(currentInstallation))
+            {
+                return currentInstallation;
+            }
+
+            return GetOfficialStoreInstallation() ?? currentInstallation;
         }
 
         private MCVersion ResolvePlayableVersion(BLInstallation installation)
@@ -311,9 +327,86 @@ namespace XylarBedrock.Pages.Play.Home
                 return null;
             }
 
-            return MainDataModel.Default.PackageManager.VersionDownloader.GetVersion(
+            MCVersion detectedStoreVersion = MainDataModel.Default.Versions.FirstOrDefault(version =>
+                !version.IsCustom &&
+                VersionDbExtensions.DoesVerionArchMatch(Constants.CurrentArchitecture, version.Architecture) &&
+                version.MatchesOfficialStoreRelease);
+
+            if (detectedStoreVersion != null)
+            {
+                return detectedStoreVersion;
+            }
+
+            MCVersion latestReleaseVersion = MainDataModel.Default.PackageManager.VersionDownloader.GetVersion(
                 VersioningMode.LatestRelease,
                 Constants.LATEST_RELEASE_UUID);
+
+            if (latestReleaseVersion != null)
+            {
+                return latestReleaseVersion;
+            }
+
+            string packageVersion = MainDataModel.Default.PackageManager.GetOfficialStorePackageVersionString();
+            string displayVersion = packageVersion;
+            if (MinecraftVersion.TryParse(packageVersion, out MinecraftVersion parsedPackageVersion))
+            {
+                displayVersion = parsedPackageVersion.ToRealString();
+            }
+
+            if (string.IsNullOrWhiteSpace(displayVersion))
+            {
+                displayVersion = "Minecraft for Windows";
+            }
+
+            return new MCVersion(
+                Constants.LATEST_RELEASE_UUID,
+                Constants.LATEST_RELEASE_UUID,
+                displayVersion,
+                VersionType.Release,
+                Constants.CurrentArchitecture);
+        }
+
+        private BLInstallation GetOfficialStoreInstallation()
+        {
+            if (!MainDataModel.Default.PackageManager.IsOfficialStoreReleaseInstalled())
+            {
+                return null;
+            }
+
+            MCVersion officialStoreVersion = GetOfficialStorePlayableVersion();
+            if (officialStoreVersion != null)
+            {
+                BLInstallation selectedInstallation = MainDataModel.Default.Config?.SelectInstallationForVersion(officialStoreVersion);
+                if (selectedInstallation != null)
+                {
+                    return selectedInstallation;
+                }
+            }
+
+            return MainDataModel.Default.Config?.CurrentInstallations?
+                .FirstOrDefault(installation => installation.IsOfficialInstallation);
+        }
+
+        private bool IsInstallationPlayableNow(BLInstallation installation)
+        {
+            if (installation == null)
+            {
+                return false;
+            }
+
+            if (installation.IsInstalledVersion)
+            {
+                return true;
+            }
+
+            if (installation.IsOfficialInstallation && MainDataModel.Default.PackageManager.IsOfficialStoreReleaseInstalled())
+            {
+                return true;
+            }
+
+            MCVersion version = ResolvePlayableVersion(installation);
+            return version?.MatchesOfficialStoreRelease == true &&
+                   MainDataModel.Default.PackageManager.IsOfficialStoreReleaseInstalled();
         }
 
         private void EnsureLauncherConfigReady()
@@ -410,17 +503,19 @@ namespace XylarBedrock.Pages.Play.Home
             {
                 MainDataModel.Default.KillGame();
             }
-            else if (!MainDataModel.Default.PackageManager.IsBundledModInstalled(ResolvePlayableVersion(ResolveSelectedInstallation())))
-            {
-                bool installed = await MainDataModel.Default.PackageManager.InstallBundledModAsync(ResolvePlayableVersion(ResolveSelectedInstallation()));
-                if (installed)
-                {
-                    CheckVersionAvailability(sender, e);
-                }
-            }
             else
             {
                 BLInstallation i = ResolveSelectedInstallation();
+                MCVersion playableVersion = ResolvePlayableVersion(i);
+
+                if (i == null || playableVersion == null)
+                {
+                    await EnsurePlayableVersionsLoadedAsync();
+                    RefreshPlayableVersionSelector();
+                    i = ResolveSelectedInstallation();
+                    playableVersion = ResolvePlayableVersion(i);
+                }
+
                 if (i == null)
                 {
                     MessageBox.Show(
@@ -431,7 +526,6 @@ namespace XylarBedrock.Pages.Play.Home
                     return;
                 }
 
-                MCVersion playableVersion = ResolvePlayableVersion(i);
                 if (playableVersion == null)
                 {
                     MessageBox.Show(
@@ -442,9 +536,20 @@ namespace XylarBedrock.Pages.Play.Home
                     return;
                 }
 
+                if (!MainDataModel.Default.PackageManager.IsBundledModInstalled(playableVersion))
+                {
+                    bool bundledModInstalled = await MainDataModel.Default.PackageManager.InstallBundledModAsync(playableVersion);
+                    if (bundledModInstalled)
+                    {
+                        CheckVersionAvailability(sender, e);
+                    }
+
+                    return;
+                }
+
                 bool keepLauncherOpen = Properties.LauncherSettings.Default.KeepLauncherOpen;
 
-                if (!i.IsInstalledVersion)
+                if (!IsInstallationPlayableNow(i))
                 {
                     bool installed = await MainDataModel.Default.Install(
                         MainDataModel.Default.Config.CurrentProfile,

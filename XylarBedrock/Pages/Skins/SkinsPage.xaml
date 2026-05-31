@@ -3,6 +3,7 @@
       xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
       xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
       xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+      xmlns:wv2="clr-namespace:Microsoft.Web.WebView2.Wpf;assembly=Microsoft.Web.WebView2.Wpf"
       mc:Ignorable="d"
       d:DesignHeight="608" d:DesignWidth="828"
       Title="SkinsPage"
@@ -34,14 +35,14 @@
         </Style>
 
         <Style x:Key="SkinCardStyle" TargetType="{x:Type Border}">
-            <Setter Property="Width" Value="64"/>
-            <Setter Property="Height" Value="92"/>
-            <Setter Property="Margin" Value="4"/>
+            <Setter Property="Width" Value="54"/>
+            <Setter Property="Height" Value="78"/>
+            <Setter Property="Margin" Value="3"/>
             <Setter Property="Background" Value="#E3171717"/>
             <Setter Property="BorderBrush" Value="#4F4A3B"/>
             <Setter Property="BorderThickness" Value="1"/>
             <Setter Property="CornerRadius" Value="4"/>
-            <Setter Property="Padding" Value="4"/>
+            <Setter Property="Padding" Value="3"/>
             <Setter Property="RenderTransformOrigin" Value="0.5,0.5"/>
             <Setter Property="RenderTransform">
                 <Setter.Value>
@@ -252,7 +253,7 @@
                               CanContentScroll="False"
                               PanningMode="VerticalOnly">
                     <StackPanel>
-                        <Border Padding="22"
+                        <Border Padding="16"
                                 CornerRadius="10"
                                 BorderBrush="#645B34"
                                 BorderThickness="1.5">
@@ -269,51 +270,61 @@
 
                             <Grid>
                                 <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="320"/>
+                                    <ColumnDefinition Width="262"/>
                                     <ColumnDefinition/>
                                 </Grid.ColumnDefinitions>
 
                                 <StackPanel VerticalAlignment="Center">
                                     <TextBlock Text="{DynamicResource SkinsPage_FavesTitle}"
                                                FontFamily="/XylarBedrock;component/Resources/fonts/#Minecraft Ten"
-                                               FontSize="34"
+                                               FontSize="29"
                                                Foreground="White"
                                                TextOptions.TextFormattingMode="Display"/>
                                     <TextBlock Text="{DynamicResource SkinsPage_MostPopular}"
                                                Margin="0,2,0,0"
                                                FontFamily="/XylarBedrock;component/Resources/fonts/#Noto Sans"
-                                               FontSize="14"
+                                               FontSize="12.5"
                                                FontWeight="SemiBold"
                                                Foreground="#FFFFD83D"/>
                                     <TextBlock x:Name="SkinCounterText"
-                                               Margin="0,16,0,0"
+                                               Margin="0,11,0,0"
                                                FontFamily="/XylarBedrock;component/Resources/fonts/#Noto Sans"
-                                               FontSize="13"
+                                               FontSize="12"
                                                Foreground="#E7E7E7"
                                                TextWrapping="Wrap"/>
                                     <TextBlock Text="{DynamicResource SkinsPage_CollectionDescription}"
-                                               Margin="0,10,22,0"
+                                               Margin="0,8,18,0"
                                                FontFamily="/XylarBedrock;component/Resources/fonts/#Noto Sans"
-                                               FontSize="12.5"
+                                               FontSize="11.5"
                                                Foreground="#CFCFCF"
                                                TextWrapping="Wrap"/>
 
-                                    <Button x:Name="DownloadButton"
-                                            Width="238"
-                                            Height="52"
-                                            Margin="0,24,0,0"
-                                            Padding="0"
-                                            IsEnabled="False"
-                                            HorizontalAlignment="Left"
-                                            Style="{DynamicResource BigGreenButton}"
-                                            Click="DownloadButton_Click">
-                                        <TextBlock Text="{DynamicResource SkinsPage_DownloadsButton}"
-                                                   FontSize="23"
-                                                   Style="{DynamicResource BigGreenButton_Text}"/>
-                                    </Button>
+                                    <WrapPanel Margin="0,16,0,0">
+                                        <Button Width="126"
+                                                Height="34"
+                                                Margin="0,0,7,7"
+                                                Style="{StaticResource SkinNavButton}"
+                                                FontSize="14"
+                                                Content="DOWNLOADS"
+                                                Click="OriginalSkinPackButton_Click"/>
+                                        <Button Width="126"
+                                                Height="34"
+                                                Margin="0,0,7,7"
+                                                Style="{StaticResource SkinNavButton}"
+                                                FontSize="14"
+                                                Content="TUTORIAL"
+                                                Click="TutorialButton_Click"/>
+                                        <Button Width="126"
+                                                Height="34"
+                                                Margin="0,0,7,7"
+                                                Style="{StaticResource SkinNavButton}"
+                                                FontSize="14"
+                                                Content="SKINMASTER"
+                                                Click="SkinMasterButton_Click"/>
+                                    </WrapPanel>
 
-                                    <Border Margin="0,12,22,0"
-                                            Padding="12,6"
+                                    <Border Margin="0,10,18,0"
+                                            Padding="10,5"
                                             Background="#99111111"
                                             BorderBrush="#3DFFFFFF"
                                             BorderThickness="1"
@@ -321,15 +332,16 @@
                                         <TextBlock x:Name="DownloadStatusText"
                                                    Text="{DynamicResource SkinsPage_AllSkinsHelp}"
                                                    FontFamily="/XylarBedrock;component/Resources/fonts/#Noto Sans"
-                                                   FontSize="12"
+                                                   FontSize="11.5"
                                                    Foreground="#EAEAEA"
                                                    TextWrapping="Wrap"/>
                                     </Border>
                                 </StackPanel>
 
                                 <Border Grid.Column="1"
-                                        MinHeight="338"
-                                        Padding="12"
+                                        MinHeight="238"
+                                        MaxHeight="292"
+                                        Padding="10"
                                         Background="#98141414"
                                         BorderBrush="#33FFFFFF"
                                         BorderThickness="1"
@@ -361,14 +373,14 @@
                                                                     </Rectangle.Fill>
                                                                 </Rectangle>
                                                                 <Ellipse Width="40"
-                                                                         Height="8"
+                                                                         Height="7"
                                                                          Fill="#75000000"
                                                                          HorizontalAlignment="Center"
                                                                          VerticalAlignment="Bottom"
                                                                          Margin="0,0,0,6"/>
                                                                 <Image Source="{Binding PreviewImage}"
-                                                                       Width="56"
-                                                                       Height="82"
+                                                                       Width="47"
+                                                                       Height="70"
                                                                        Stretch="Uniform"
                                                                        HorizontalAlignment="Center"
                                                                        VerticalAlignment="Center"
@@ -413,5 +425,127 @@
                 </ScrollViewer>
             </Grid>
         </Grid>
+
+        <Border x:Name="TutorialOverlay"
+                Visibility="Collapsed"
+                Background="#F2070707"
+                Padding="34"
+                Panel.ZIndex="20">
+            <Border CornerRadius="14"
+                    BorderBrush="#5EFFFFFF"
+                    BorderThickness="1"
+                    Background="#EE151515">
+                <Border.Effect>
+                    <DropShadowEffect Color="#000000" BlurRadius="34" ShadowDepth="10" Opacity="0.7"/>
+                </Border.Effect>
+                <Grid Margin="18">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition/>
+                        <RowDefinition Height="Auto"/>
+                    </Grid.RowDefinitions>
+
+                    <Grid Margin="0,0,0,12">
+                        <StackPanel>
+                            <TextBlock Text="FAVE SKIN PACK TUTORIAL"
+                                       FontFamily="/XylarBedrock;component/Resources/fonts/#Minecraft Ten"
+                                       FontSize="28"
+                                       Foreground="White"/>
+                            <TextBlock Text="Watch this inside XylarBedrock, then import each skin pack part in Minecraft."
+                                       Margin="0,4,0,0"
+                                       FontFamily="/XylarBedrock;component/Resources/fonts/#Noto Sans"
+                                       FontSize="12.5"
+                                       Foreground="#DCDCDC"/>
+                        </StackPanel>
+
+                        <Button Width="44"
+                                Height="38"
+                                HorizontalAlignment="Right"
+                                VerticalAlignment="Top"
+                                Style="{StaticResource SkinNavButton}"
+                                FontSize="18"
+                                Content="X"
+                                Click="CloseTutorialButton_Click"/>
+                    </Grid>
+
+                    <Border Grid.Row="1"
+                            CornerRadius="10"
+                            BorderBrush="#444444"
+                            BorderThickness="1"
+                            Background="#FF000000"
+                            ClipToBounds="True">
+                        <wv2:WebView2 x:Name="TutorialPlayer"
+                                      NavigationCompleted="TutorialPlayer_NavigationCompleted"/>
+                    </Border>
+
+                    <Border Grid.Row="2"
+                            Margin="0,12,0,0"
+                            Padding="12"
+                            CornerRadius="8"
+                            Background="#E20F0F0F"
+                            BorderBrush="#343434"
+                            BorderThickness="1">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+
+                            <Button Width="72"
+                                    Height="34"
+                                    Margin="0,0,8,0"
+                                    Style="{StaticResource SkinNavButton}"
+                                    FontSize="14"
+                                    Content="-10S"
+                                    Click="TutorialBackButton_Click"/>
+
+                            <Button x:Name="TutorialPlayPauseButton"
+                                    Grid.Column="1"
+                                    Width="92"
+                                    Height="34"
+                                    Margin="0,0,8,0"
+                                    Style="{StaticResource SkinNavButton}"
+                                    FontSize="14"
+                                    Content="PAUSE"
+                                    Click="TutorialPlayPauseButton_Click"/>
+
+                            <Button Grid.Column="2"
+                                    Width="72"
+                                    Height="34"
+                                    Margin="0,0,12,0"
+                                    Style="{StaticResource SkinNavButton}"
+                                    FontSize="14"
+                                    Content="+10S"
+                                    Click="TutorialForwardButton_Click"/>
+
+                            <Slider x:Name="TutorialSeekSlider"
+                                    Grid.Column="3"
+                                    Minimum="0"
+                                    Maximum="1"
+                                    Value="0"
+                                    VerticalAlignment="Center"
+                                    IsMoveToPointEnabled="True"
+                                    PreviewMouseDown="TutorialSeekSlider_PreviewMouseDown"
+                                    PreviewMouseUp="TutorialSeekSlider_PreviewMouseUp"
+                                    ValueChanged="TutorialSeekSlider_ValueChanged"/>
+
+                            <TextBlock x:Name="TutorialTimeText"
+                                       Grid.Column="4"
+                                       Width="104"
+                                       Margin="12,0,0,0"
+                                       Text="00:00 / 00:00"
+                                       FontFamily="/XylarBedrock;component/Resources/fonts/#Noto Sans"
+                                       FontSize="12"
+                                       Foreground="#DCDCDC"
+                                       VerticalAlignment="Center"
+                                       TextAlignment="Right"/>
+                        </Grid>
+                    </Border>
+                </Grid>
+            </Border>
+        </Border>
     </Grid>
 </Page>
