@@ -28,8 +28,7 @@ https://github.com/xylarcompany/XylarBedrock/releases/latest
 
 ## Our Website
 
-This is our website: https://someoneverykewl.github.io/xylarbedrock.github.io/ !
-
+This is our website: https://xylarbedrock.github.io/
 ---
 
 ## About
