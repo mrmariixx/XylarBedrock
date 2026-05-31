@@ -26,6 +26,12 @@ https://github.com/xylarcompany/XylarBedrock/releases/latest
 
 ---
 
+## Our Website
+
+This is our website: https://someoneverykewl.github.io/xylarbedrock.github.io/ !
+
+---
+
 ## About
 
 A simple launcher to start and manage Minecraft Bedrock on Windows.
